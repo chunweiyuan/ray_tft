@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 import ray
 import xarray as xr
-from fbd_research.fertility.asfr.tft.constants import BATCH_SIZE
+from fbd_research.fertility.asfr.tft.constants import (BATCH_SIZE,
+                                                       N_VALIDATION_YEARS)
 from lightning.pytorch import Trainer
 from pytorch_forecasting import (Baseline, TemporalFusionTransformer,
                                  TimeSeriesDataSet)
@@ -20,19 +21,15 @@ warnings.filterwarnings("ignore")  # avoid printing out absolute paths
 
 def make_training_validation_sets(
         df: pd.DataFrame,
-        min_encoder_length: int,
-        max_encoder_length: int,
-        min_decoder_length: int,
-        max_decoder_length: int,
+        past_start: int,
+        forecast_start: int,
         num_workers: int) -> tuple[TimeSeriesDataSet, DataLoader]:
     """Set up training/validation datasets and their dataloaders.
 
     Args:
         df (pd.DataFrame): contains all training/validation data.
-        min_encoder_length (int): min number of years for training.
-        max_encoder_length (int): max number of years for training.
-        min_decoder_length (int): min number of years for prediction.
-        max_decoder_length (int): max number of years for prediction.
+        past_start (int): first past year.
+        forecast_start (int): first forecast year.
         num_workers (int): number of cores (aside from driver).
             Set to 0 if there's only one cpu available.
             An argument for pytorch lightning's dataloader, which
@@ -42,12 +39,20 @@ def make_training_validation_sets(
         (tuple[TimeSeriesDataSet, DataLoader]): training/validation
             datasets and dataloaders.
     """
+    # the years help set some training parameters
+    # NOTE not sure why the mins should be 1
+    n_past_years = forecast_start - past_start
+    min_prediction_length = 1
+    max_prediction_length = N_VALIDATION_YEARS
+    min_encoder_length = 1
+    max_encoder_length = n_past_years - min_prediction_length
+
     training_dataset = make_time_series_dataset(
         df,
         min_encoder_length=min_encoder_length,
         max_encoder_length=max_encoder_length,
-        min_prediction_length=min_decoder_length,
-        max_prediction_length=max_decoder_length)
+        min_prediction_length=min_prediction_length,
+        max_prediction_length=max_prediction_length)
 
     # create validation (set predict=True),
     # which means to predict the last max_prediction_length points in time
@@ -57,10 +62,10 @@ def make_training_validation_sets(
         df,
         predict=True,
         stop_randomization=True,
-        min_encoder_length=max_encoder_length,
-        max_encoder_length=max_encoder_length,  # both min/max are the same
-        min_prediction_length=max_decoder_length,
-        max_prediction_length=max_decoder_length)  # both min/max are the same
+        min_encoder_length=1,
+        max_encoder_length=n_past_years - N_VALIDATION_YEARS,
+        min_prediction_length=N_VALIDATION_YEARS,
+        max_prediction_length=N_VALIDATION_YEARS)
 
     # create dataloaders for model
     # num_workers=0 if only 1 cpu.
@@ -253,18 +258,16 @@ def make_forecast(dataset: TimeSeriesDataSet,
             forecasted year_ids.
     """
     # need to loop over locations & ages:
-    location_das = []
+    location_da_refs = []
     for location_id in location_ids:
 
         # Ray remote call returns a "future" ref
-        location_da = _location_forecast.remote(
+        location_da_ref = _location_forecast.remote(
             dataset, tft, tft_q, quantiles, location_id, ages)
 
-        location_das.append(location_da)  # list of ray future refs
+        location_da_refs.append(location_da_ref)  # list of ray future refs
 
-    location_das = ray.get(location_das)
-
-    return xr.concat(location_das, dim="location_id")
+    return ray.get(_concat.remote(*location_da_refs, dim="location_id"))
 
 
 @ray.remote(num_cpus=1)

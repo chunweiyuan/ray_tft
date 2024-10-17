@@ -19,12 +19,9 @@ from scipy.special import logit
 warnings.filterwarnings("ignore")  # avoid printing out absolute paths
 
 # this contains all data, even cells not yet forecasted.
-past_start = 1970
+past_start = 1997
 forecast_start = 2022
 forecast_end = 2100
-
-n_val_years = 10
-n_train_years = forecast_start - past_start - n_val_years
 
 df = get_dataset(past_start, forecast_start, forecast_end)
 
@@ -41,7 +38,7 @@ gc.collect()
 
 # training/validation only need past_df
 training_dataset, validation_dataset, train_dataloader, val_dataloader =\
-    make_training_validation_sets(past_df, n_train_years, n_val_years,
+    make_training_validation_sets(past_df, past_start, forecast_start,
                                   num_workers=0)
 
 # learning rate is only one of the many hyperparameters.
